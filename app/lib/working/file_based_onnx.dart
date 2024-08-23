@@ -1,27 +1,42 @@
 import 'package:flutter/material.dart';
-import 'package:image_picker/image_picker.dart';
+import 'package:camera/camera.dart';
 import 'package:onnxruntime/onnxruntime.dart';
-import 'dart:io';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:image/image.dart' as img;
 import 'dart:typed_data';
 
 class ObjectDetectionPage extends StatefulWidget {
   @override
-  _ObjectDetectionPageState createState() => _ObjectDetectionPageState();
+  _LiveObjectDetectionPageState createState() => _LiveObjectDetectionPageState();
 }
 
-class _ObjectDetectionPageState extends State<ObjectDetectionPage> {
+class _LiveObjectDetectionPageState extends State<ObjectDetectionPage> {
+  CameraController? _cameraController;
   OrtSession? _onnxSession;
-  File? _image;
   Map<String, dynamic>? _highestConfidenceDetection;
-  bool _loading = false;
-  Size? _imageSize;
+  bool _isDetecting = false;
+  Size? _previewSize;
 
   @override
   void initState() {
     super.initState();
+    _initializeCamera();
     _initializeOnnx();
+  }
+
+  Future<void> _initializeCamera() async {
+    final cameras = await availableCameras();
+    final firstCamera = cameras.first;
+    _cameraController = CameraController(
+      firstCamera,
+      ResolutionPreset.medium,
+      enableAudio: false,
+    );
+    await _cameraController!.initialize();
+    if (mounted) {
+      setState(() {});
+    }
+    _startDetection();
   }
 
   Future<void> _initializeOnnx() async {
@@ -33,66 +48,67 @@ class _ObjectDetectionPageState extends State<ObjectDetectionPage> {
     _onnxSession = OrtSession.fromBuffer(bytes, sessionOptions);
   }
 
-  Future<void> _pickImage() async {
-    final ImagePicker picker = ImagePicker();
-    final XFile? image = await picker.pickImage(source: ImageSource.gallery);
-    if (image == null) return;
-    setState(() {
-      _loading = true;
-      _image = File(image.path);
+  void _startDetection() {
+    if (_cameraController == null || !_cameraController!.value.isInitialized) return;
+
+    _cameraController!.startImageStream((CameraImage image) {
+      if (!_isDetecting) {
+        _isDetecting = true;
+        _runInference(image);
+      }
     });
-    await _runInference();
   }
 
-  Future<void> _runInference() async {
-    if (_image == null || _onnxSession == null) return;
-
-    // record time starting now
+  Future<void> _runInference(CameraImage image) async {
+    if (_onnxSession == null) return;
     final run_timer = Stopwatch()..start();
 
-    // Load and preprocess the image
-    final imageData = await _image!.readAsBytes();
-    final decodedImage = img.decodeImage(imageData);
+    // final inputData = cameraImageToFloat32List(image);
+    final imageData = await image.planes.map((plane) {
+                  return plane.bytes;
+                }).toList();
+                
+    // final decodedImage = img.decodeImage(imageData);
+
+    final decodedImage = img.Image.fromBytes(image.width, image.height, imageData[0],
+        format: img.Format.rgb);
+        // format: img.Format.bgra);
+
     if (decodedImage == null) return;
     print("Decoding time: ${run_timer.elapsedMilliseconds} ms");
 
-    setState(() {
-      _imageSize = Size(decodedImage.width.toDouble(), decodedImage.height.toDouble());
-    });
+    // setState(() {
+    //   _imageSize = Size(decodedImage.width.toDouble(), decodedImage.height.toDouble());
+    // });
 
     final resizedImage = img.copyResize(decodedImage, width: 640, height: 640);
     final inputData = _imageToFloat32List(resizedImage);
     print("Preprocessing time: ${run_timer.elapsedMilliseconds} ms");
 
-    // Create input tensor
+
     final shape = [1, 3, 640, 640];
     final inputTensor = OrtValueTensor.createTensorWithDataList(inputData, shape);
 
-    // Run inference
     final inputs = {'images': inputTensor};
     final runOptions = OrtRunOptions();
-    print("Processing time: ${run_timer.elapsedMilliseconds} ms");
 
-    final outputs = await _onnxSession!.run(runOptions, inputs);
-    run_timer.stop();
-    print('Inference time: ${run_timer.elapsedMilliseconds} ms');
-    
-    final outputData = outputs[0]!.value as List<List<List<double>>>;
-    final highestConfidenceDetection = _processOutput(outputData);
-    print(highestConfidenceDetection);
+    try {
+      final outputs = await _onnxSession!.run(runOptions, inputs);
+      final outputData = outputs[0]!.value as List<List<List<double>>>;
+      final highestConfidenceDetection = _processOutput(outputData);
+      print("PREDICTION: $highestConfidenceDetection");
 
-    //print time taken
-    print('Time taken: ${run_timer.elapsedMilliseconds} ms');
-    
-    setState(() {
-      _highestConfidenceDetection = highestConfidenceDetection;
-      _loading = false;
-    });
-
-    // Clean up
-    inputTensor.release();
-    runOptions.release();
-    outputs.forEach((value) => value?.release());
+      setState(() {
+        _highestConfidenceDetection = highestConfidenceDetection;
+        _previewSize = Size(image.width.toDouble(), image.height.toDouble());
+      });
+    } finally {
+      inputTensor.release();
+      runOptions.release();
+      _isDetecting = false;
+    } 
+    _isDetecting = false;
+    print("ATTEMTPED TO RUN INFERENCE");
   }
 
   Float32List _imageToFloat32List(img.Image image) {
@@ -110,6 +126,73 @@ class _ObjectDetectionPageState extends State<ObjectDetectionPage> {
     }
     return float32List;
   }
+
+
+  Float32List _cameraImageToFloat32List(CameraImage image) {
+    final float32List = Float32List(3 * 640 * 640);
+    final int width = image.width;
+    final int height = image.height;
+    final int uvRowStride = image.planes[1].bytesPerRow;
+    final int uvPixelStride = image.planes[1].bytesPerPixel!;
+
+    for (int y = 0; y < 640; y++) {
+      for (int x = 0; x < 640; x++) {
+        final int uvIndex = uvPixelStride * (x / 2).floor() + uvRowStride * (y / 2).floor();
+        final int index = y * 640 + x;
+
+        final yp = image.planes[0].bytes[y * width + x];
+        final up = image.planes[1].bytes[uvIndex];
+        final vp = image.planes[2].bytes[uvIndex];
+
+        // Convert YUV to RGB
+        int r = (yp + vp * 1436 / 1024 - 179).round().clamp(0, 255);
+        int g = (yp - up * 46549 / 131072 + 44 - vp * 93604 / 131072 + 91).round().clamp(0, 255);
+        int b = (yp + up * 1814 / 1024 - 227).round().clamp(0, 255);
+
+        // Normalize to [0, 1] and store
+        float32List[index] = r / 255.0;
+        float32List[index + 640 * 640] = g / 255.0;
+        float32List[index + 2 * 640 * 640] = b / 255.0;
+      }
+    }
+    return float32List;
+  }
+  List<double> cameraImageToFloat32List(CameraImage image) {
+    var convertedBytes = Float32List(1 * 3 * image.height * image.width);
+    var buffer = Float32List.view(convertedBytes.buffer);
+    int pixelIndex = 0;
+
+    for (var plane in image.planes) {
+      var pixels = plane.bytes;
+
+      var stride = plane.bytesPerRow;
+      var rows = image.height;
+      var cols = image.width;
+
+      for (var row = 0; row < rows; row++) {
+        for (var col = 0; col < cols; col++) {
+          var pixel = pixels[row * stride + col];
+          // Normalize the pixel value to [0, 1]
+          buffer[pixelIndex++] = pixel / 255.0;
+        }
+      }
+    }
+
+    return convertedBytes;
+  }
+
+
+
+
+
+
+
+
+
+
+
+
+
 
   Map<String, dynamic>? _processOutput(List<List<List<double>>> outputData) {
     // outputData shape is [1, 84, 8400]
@@ -153,45 +236,29 @@ class _ObjectDetectionPageState extends State<ObjectDetectionPage> {
 
   @override
   Widget build(BuildContext context) {
+    if (_cameraController == null || !_cameraController!.value.isInitialized) {
+      return Center(child: CircularProgressIndicator());
+    }
+
     return Scaffold(
-      appBar: AppBar(
-        title: Text('YOLOv8 Object Detection - Bounding Box'),
-      ),
-      body: Center(
-        child: _loading
-            ? CircularProgressIndicator()
-            : Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: <Widget>[
-                  if (_image != null && _imageSize != null) ...[
-                    Stack(
-                      children: [
-                        Image.file(_image!, height: 300),
-                        CustomPaint(
-                          size: Size(300 * (_imageSize!.width / _imageSize!.height), 300),
-                          painter: BoundingBoxPainter(_highestConfidenceDetection, _imageSize!),
-                        ),
-                      ],
-                    ),
-                    SizedBox(height: 20),
-                  ],
-                  ElevatedButton(
-                    onPressed: _pickImage,
-                    child: Text('Pick an image'),
-                  ),
-                  if (_highestConfidenceDetection != null) ...[
-                    SizedBox(height: 20),
-                    Text('Highest confidence detection:'),
-                    Text('Class: ${_highestConfidenceDetection!['class']}, Score: ${_highestConfidenceDetection!['score'].toStringAsFixed(3)}'),
-                  ],
-                ],
-              ),
+      appBar: AppBar(title: Text('Live YOLOv8 Object Detection')),
+      body: Stack(
+        fit: StackFit.expand,
+        children: [
+          CameraPreview(_cameraController!),
+          if (_previewSize != null)
+            CustomPaint(
+              size: _previewSize!,
+              painter: BoundingBoxPainter(_highestConfidenceDetection, _previewSize!),
+            ),
+        ],
       ),
     );
   }
 
   @override
   void dispose() {
+    _cameraController?.dispose();
     _onnxSession?.release();
     OrtEnv.instance.release();
     super.dispose();
