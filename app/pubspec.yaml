@@ -18,6 +18,7 @@ dependencies:
   flutter_vision: ^1.1.4
   image_picker: ^1.1.2
   image: ^3.0.1
+  onnxruntime: ^1.4.1
 
 # dev_dependencies:
 #   flutter_test:
