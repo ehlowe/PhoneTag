@@ -47,10 +47,14 @@ class _ObjectDetectionPageState extends State<ObjectDetectionPage> {
   Future<void> _runInference() async {
     if (_image == null || _onnxSession == null) return;
 
+    // record time starting now
+    final run_timer = Stopwatch()..start();
+
     // Load and preprocess the image
     final imageData = await _image!.readAsBytes();
     final decodedImage = img.decodeImage(imageData);
     if (decodedImage == null) return;
+    print("Decoding time: ${run_timer.elapsedMilliseconds} ms");
 
     setState(() {
       _imageSize = Size(decodedImage.width.toDouble(), decodedImage.height.toDouble());
@@ -58,6 +62,7 @@ class _ObjectDetectionPageState extends State<ObjectDetectionPage> {
 
     final resizedImage = img.copyResize(decodedImage, width: 640, height: 640);
     final inputData = _imageToFloat32List(resizedImage);
+    print("Preprocessing time: ${run_timer.elapsedMilliseconds} ms");
 
     // Create input tensor
     final shape = [1, 3, 640, 640];
@@ -65,13 +70,19 @@ class _ObjectDetectionPageState extends State<ObjectDetectionPage> {
 
     // Run inference
     final inputs = {'images': inputTensor};
-
     final runOptions = OrtRunOptions();
+    print("Processing time: ${run_timer.elapsedMilliseconds} ms");
+
     final outputs = await _onnxSession!.run(runOptions, inputs);
+    run_timer.stop();
+    print('Inference time: ${run_timer.elapsedMilliseconds} ms');
     
     final outputData = outputs[0]!.value as List<List<List<double>>>;
     final highestConfidenceDetection = _processOutput(outputData);
     print(highestConfidenceDetection);
+
+    //print time taken
+    print('Time taken: ${run_timer.elapsedMilliseconds} ms');
     
     setState(() {
       _highestConfidenceDetection = highestConfidenceDetection;
