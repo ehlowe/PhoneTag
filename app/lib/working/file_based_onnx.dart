@@ -14,8 +14,9 @@ class ObjectDetectionPage extends StatefulWidget {
 class _ObjectDetectionPageState extends State<ObjectDetectionPage> {
   OrtSession? _onnxSession;
   File? _image;
-  List<String>? _results;
+  Map<String, dynamic>? _highestConfidenceDetection;
   bool _loading = false;
+  Size? _imageSize;
 
   @override
   void initState() {
@@ -51,6 +52,10 @@ class _ObjectDetectionPageState extends State<ObjectDetectionPage> {
     final decodedImage = img.decodeImage(imageData);
     if (decodedImage == null) return;
 
+    setState(() {
+      _imageSize = Size(decodedImage.width.toDouble(), decodedImage.height.toDouble());
+    });
+
     final resizedImage = img.copyResize(decodedImage, width: 640, height: 640);
     final inputData = _imageToFloat32List(resizedImage);
 
@@ -65,9 +70,11 @@ class _ObjectDetectionPageState extends State<ObjectDetectionPage> {
     final outputs = await _onnxSession!.run(runOptions, inputs);
     
     final outputData = outputs[0]!.value as List<List<List<double>>>;
-    final results = _processOutput(outputData);
+    final highestConfidenceDetection = _processOutput(outputData);
+    print(highestConfidenceDetection);
+    
     setState(() {
-      _results = results;
+      _highestConfidenceDetection = highestConfidenceDetection;
       _loading = false;
     });
 
@@ -93,12 +100,13 @@ class _ObjectDetectionPageState extends State<ObjectDetectionPage> {
     return float32List;
   }
 
-  List<String> _processOutput(List<List<List<double>>> outputData) {
-    final results = <String>[];
-    
+  Map<String, dynamic>? _processOutput(List<List<List<double>>> outputData) {
     // outputData shape is [1, 84, 8400]
     final detections = outputData[0]; // [84, 8400]
     
+    Map<String, dynamic>? highestConfidenceDetection;
+    double highestConfidence = 0;
+
     for (int i = 0; i < 8400; i++) {
       final detection = <double>[];
       for (int j = 0; j < 84; j++) {
@@ -114,43 +122,59 @@ class _ObjectDetectionPageState extends State<ObjectDetectionPage> {
       final maxScore = classScores.reduce((a, b) => a > b ? a : b);
       final classIndex = classScores.indexOf(maxScore);
       
-      if (maxScore > 0.5) { // Confidence threshold
-        results.add('Detection $i: (x: $x, y: $y, w: $w, h: $h), Class: $classIndex, Score: ${maxScore.toStringAsFixed(3)}');
+      if (maxScore > highestConfidence){
+        if  (classIndex == 0) {
+          highestConfidence = maxScore;
+          highestConfidenceDetection = {
+            'x': x,
+            'y': y,
+            'w': w,
+            'h': h,
+            'class': classIndex,
+            'score': maxScore,
+          };
+        }
       }
     }
     
-    return results;
+    return highestConfidenceDetection;
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text('YOLOv8 Object Detection - Debug'),
+        title: Text('YOLOv8 Object Detection - Bounding Box'),
       ),
-      body: SingleChildScrollView(
-        child: Center(
-          child: _loading
-              ? CircularProgressIndicator()
-              : Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: <Widget>[
-                    if (_image != null) ...[
-                      Image.file(_image!, height: 200),
-                      SizedBox(height: 20),
-                    ],
-                    ElevatedButton(
-                      onPressed: _pickImage,
-                      child: Text('Pick an image'),
+      body: Center(
+        child: _loading
+            ? CircularProgressIndicator()
+            : Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: <Widget>[
+                  if (_image != null && _imageSize != null) ...[
+                    Stack(
+                      children: [
+                        Image.file(_image!, height: 300),
+                        CustomPaint(
+                          size: Size(300 * (_imageSize!.width / _imageSize!.height), 300),
+                          painter: BoundingBoxPainter(_highestConfidenceDetection, _imageSize!),
+                        ),
+                      ],
                     ),
-                    if (_results != null) ...[
-                      SizedBox(height: 20),
-                      Text('Detected objects:'),
-                      ..._results!.map((result) => Text(result, style: TextStyle(fontSize: 10))).toList(),
-                    ],
+                    SizedBox(height: 20),
                   ],
-                ),
-        ),
+                  ElevatedButton(
+                    onPressed: _pickImage,
+                    child: Text('Pick an image'),
+                  ),
+                  if (_highestConfidenceDetection != null) ...[
+                    SizedBox(height: 20),
+                    Text('Highest confidence detection:'),
+                    Text('Class: ${_highestConfidenceDetection!['class']}, Score: ${_highestConfidenceDetection!['score'].toStringAsFixed(3)}'),
+                  ],
+                ],
+              ),
       ),
     );
   }
@@ -160,5 +184,50 @@ class _ObjectDetectionPageState extends State<ObjectDetectionPage> {
     _onnxSession?.release();
     OrtEnv.instance.release();
     super.dispose();
+  }
+}
+
+class BoundingBoxPainter extends CustomPainter {
+  final Map<String, dynamic>? detection;
+  final Size originalImageSize;
+
+  BoundingBoxPainter(this.detection, this.originalImageSize);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (detection == null) return;
+
+    final paint = Paint()
+      ..color = Colors.red
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.0;
+
+    final scaleX = size.width / 640;
+    final scaleY = size.height / 640;
+
+    // final left = detection!['x'] * scaleX;
+    // final top = detection!['y'] * scaleY;
+    // final right = left + detection!['w'] * scaleX;
+    // final bottom = top + detection!['h'] * scaleY;
+
+    // Corrected bounding box calculation
+    final centerX = detection!['x'] * scaleX;
+    final centerY = detection!['y'] * scaleY;
+    final width = detection!['w'] * scaleX;
+    final height = detection!['h'] * scaleY;
+
+    final left = centerX - width / 2;
+    final top = centerY - height / 2;
+    final right = centerX + width / 2;
+    final bottom = centerY + height / 2;
+
+    print('left: $left, top: $top, right: $right, bottom: $bottom');
+
+    canvas.drawRect(Rect.fromLTRB(left, top, right, bottom), paint);
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) {
+    return true;
   }
 }
