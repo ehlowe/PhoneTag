@@ -1,0 +1,31 @@
+name: mobilenet_v1_flutter
+description: A Flutter project using MobileNet v1 for image classification.
+# The following line prevents the package from being accidentally published to
+# pub.dev using `flutter pub publish`. This is preferred for private packages.
+publish_to: 'none' # Remove this line if you wish to publish to pub.dev
+version: 1.0.0+1
+environment:
+  sdk: '>=2.19.0 <3.0.0'
+
+
+
+
+dependencies:
+  audioplayers: ^5.2.1
+  camera: ^0.11.0+2
+  flutter:
+    sdk: flutter
+  flutter_vision: ^1.1.4
+  image_picker: ^1.1.2
+  image: ^3.0.1
+
+# dev_dependencies:
+#   flutter_test:
+#     sdk: flutter
+#   flutter_lints: ^2.0.0
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/
